@@ -1,0 +1,531 @@
+{
+  "name": "Lead Collector Pro",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger-manual",
+      "name": "Iniciar Coleta",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cidade",
+              "name": "cidade",
+              "value": "Belo Horizonte",
+              "type": "string"
+            },
+            {
+              "id": "estado",
+              "name": "estado",
+              "value": "MG",
+              "type": "string"
+            },
+            {
+              "id": "categorias",
+              "name": "categorias",
+              "value": "clínica médica,clínica odontológica,escritório de advocacia,escritório de contabilidade,agência de marketing,e-commerce,loja de roupas,pet shop,academia,salão de beleza,restaurante,consultório",
+              "type": "string"
+            },
+            {
+              "id": "max_por_categoria",
+              "name": "max_por_categoria",
+              "value": 5,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config-busca",
+      "name": "Configurar Busca",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Preparar queries de busca para o Google Maps\nconst cidade = $json.cidade;\nconst estado = $json.estado;\nconst categorias = $json.categorias.split(',').map(c => c.trim());\nconst maxPorCategoria = $json.max_por_categoria;\n\n// Criar array de buscas\nconst searchStrings = categorias.map(cat => `${cat} ${cidade} ${estado}`);\n\nreturn {\n  searchStringsArray: searchStrings,\n  maxCrawledPlacesPerSearch: maxPorCategoria,\n  cidade: cidade,\n  estado: estado,\n  total_categorias: categorias.length\n};"
+      },
+      "id": "preparar-queries",
+      "name": "Preparar Queries",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "actorSource": "store",
+        "actorId": {
+          "__rl": true,
+          "value": "nwua9Gu5YrADL7ZDj",
+          "mode": "list",
+          "cachedResultName": "Google Maps Scraper (compass/crawler-google-places)"
+        },
+        "customBody": "={{ JSON.stringify({\n  \"searchStringsArray\": $json.searchStringsArray,\n  \"maxCrawledPlacesPerSearch\": $json.maxCrawledPlacesPerSearch,\n  \"language\": \"pt-BR\",\n  \"deeperCityScrape\": false,\n  \"includeWebResults\": false,\n  \"scrapeReviewerName\": false,\n  \"scrapeReviewerId\": false,\n  \"scrapeReviewerUrl\": false,\n  \"scrapeReviewId\": false,\n  \"scrapeReviewUrl\": false,\n  \"scrapeResponseFromOwnerText\": false\n}) }}",
+        "authentication": "apifyOAuth2Api"
+      },
+      "id": "google-maps-scraper",
+      "name": "Google Maps Scraper",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [660, 0],
+      "credentials": {
+        "apifyOAuth2Api": {
+          "id": "YzHm6JEHymABX1Ge",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "Datasets",
+        "datasetId": "={{ $json.defaultDatasetId }}",
+        "limit": 500,
+        "authentication": "apifyOAuth2Api"
+      },
+      "id": "get-maps-data",
+      "name": "Obter Resultados Maps",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [880, 0],
+      "credentials": {
+        "apifyOAuth2Api": {
+          "id": "YzHm6JEHymABX1Ge",
+          "name": "Apify account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filtrar e processar empresas do Google Maps\nconst items = $input.all();\n\nconst normalize = (str) => {\n  if (!str) return '';\n  return str.toString().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase();\n};\n\nconst empresasValidas = items.filter(item => {\n  const j = item.json;\n  \n  // Deve ser do Brasil\n  if (j.countryCode !== 'BR') return false;\n  \n  // Não pode estar fechado\n  if (j.permanentlyClosed || j.temporarilyClosed) return false;\n  \n  // Deve ter nome\n  if (!j.title && !j.name) return false;\n  \n  return true;\n}).map(item => {\n  const j = item.json;\n  \n  return {\n    // Identificação\n    nome: j.title || j.name || '',\n    categoria: j.categoryName || (j.categories && j.categories[0]) || '',\n    \n    // Localização\n    endereco: j.address || '',\n    cidade: j.city || '',\n    bairro: j.neighborhood || '',\n    cep: j.postalCode || '',\n    latitude: j.location?.lat || 0,\n    longitude: j.location?.lng || 0,\n    \n    // Contatos do Google\n    telefone: j.phone || '',\n    telefone_limpo: (j.phoneUnformatted || j.phone || '').replace(/\\D/g, ''),\n    website: j.website || '',\n    \n    // Métricas\n    rating: j.totalScore || 0,\n    total_reviews: j.reviewsCount || 0,\n    \n    // IDs\n    place_id: j.placeId || '',\n    google_url: j.url || '',\n    \n    // Campos para preencher depois\n    email: '',\n    instagram: '',\n    facebook: '',\n    linkedin: '',\n    twitter: '',\n    youtube: '',\n    tiktok: '',\n    whatsapp: ''\n  };\n});\n\n// Remover duplicatas por nome\nconst seen = new Set();\nconst unique = empresasValidas.filter(e => {\n  const key = normalize(e.nome);\n  if (seen.has(key)) return false;\n  seen.add(key);\n  return true;\n});\n\nreturn unique;"
+      },
+      "id": "filtrar-empresas",
+      "name": "Filtrar Empresas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 0]
+    },
+    {
+      "parameters": {
+        "batchSize": 10,
+        "options": {}
+      },
+      "id": "split-batch-1",
+      "name": "Processar em Lotes",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1320, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-website",
+              "leftValue": "={{ $json.website }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-website",
+      "name": "Tem Website?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1540, 0]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.website }}",
+        "options": {
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 3
+            }
+          },
+          "timeout": 15000
+        }
+      },
+      "id": "fetch-website",
+      "name": "Buscar Website",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1760, -100],
+      "onError": "continueRegularOutput",
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrair contatos e redes sociais do HTML do site\nconst html = $json.data || $json.body || '';\nconst empresa = $('Tem Website?').item.json;\n\nif (!html || html.length < 100) {\n  return {\n    ...empresa,\n    fonte_website: 'Site não acessível'\n  };\n}\n\n// ========== EMAILS ==========\nconst emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/gi;\nconst emailsEncontrados = html.match(emailRegex) || [];\nconst emailsFiltrados = [...new Set(emailsEncontrados)].filter(email => {\n  const lower = email.toLowerCase();\n  return !lower.includes('example') &&\n         !lower.includes('teste') &&\n         !lower.includes('wix.com') &&\n         !lower.includes('wordpress') &&\n         !lower.includes('sentry') &&\n         !lower.endsWith('.png') &&\n         !lower.endsWith('.jpg') &&\n         !lower.endsWith('.gif') &&\n         !lower.includes('noreply') &&\n         email.length < 50;\n});\n\n// Priorizar corporativos\nconst emailsCorp = emailsFiltrados.filter(e => \n  !e.includes('gmail') && !e.includes('hotmail') && \n  !e.includes('outlook') && !e.includes('yahoo') &&\n  !e.includes('uol.com') && !e.includes('bol.com')\n);\nconst emailFinal = emailsCorp[0] || emailsFiltrados[0] || '';\n\n// ========== INSTAGRAM ==========\nconst instaRegex = /(?:instagram\\.com|instagr\\.am)\\/([a-zA-Z0-9_.]{1,30})(?:\\/|\\?|$|\")/gi;\nconst instaMatches = [...html.matchAll(instaRegex)];\nconst instaHandles = instaMatches.map(m => m[1]).filter(h => \n  !['p', 'explore', 'accounts', 'about', 'reel', 'reels', 'stories', 'direct', 'legal'].includes(h.toLowerCase()) &&\n  h.length > 1 && h.length <= 30\n);\nconst instagram = instaHandles[0] ? `https://instagram.com/${instaHandles[0]}` : '';\n\n// ========== FACEBOOK ==========\nconst fbRegex = /(?:facebook\\.com|fb\\.com)\\/([a-zA-Z0-9.]{2,50})(?:\\/|\\?|$|\")/gi;\nconst fbMatches = [...html.matchAll(fbRegex)];\nconst fbHandles = fbMatches.map(m => m[1]).filter(h => \n  !['sharer', 'plugins', 'dialog', 'share', 'tr', 'flx', 'login'].includes(h.toLowerCase())\n);\nconst facebook = fbHandles[0] ? `https://facebook.com/${fbHandles[0]}` : '';\n\n// ========== LINKEDIN ==========\nconst linkedinRegex = /linkedin\\.com\\/(?:company|in|school)\\/([a-zA-Z0-9_-]+)(?:\\/|\\?|$|\")/gi;\nconst linkedinMatches = [...html.matchAll(linkedinRegex)];\nconst linkedin = linkedinMatches[0] ? `https://linkedin.com/company/${linkedinMatches[0][1]}` : '';\n\n// ========== TWITTER/X ==========\nconst twitterRegex = /(?:twitter\\.com|x\\.com)\\/([a-zA-Z0-9_]{1,15})(?:\\/|\\?|$|\")/gi;\nconst twitterMatches = [...html.matchAll(twitterRegex)];\nconst twitterHandles = twitterMatches.map(m => m[1]).filter(h => \n  !['share', 'intent', 'home', 'search', 'hashtag', 'i'].includes(h.toLowerCase())\n);\nconst twitter = twitterHandles[0] ? `https://twitter.com/${twitterHandles[0]}` : '';\n\n// ========== YOUTUBE ==========\nconst ytRegex = /youtube\\.com\\/(?:channel|c|user|@)\\/?([a-zA-Z0-9_-]+)(?:\\/|\\?|$|\")/gi;\nconst ytMatches = [...html.matchAll(ytRegex)];\nconst youtube = ytMatches[0] ? `https://youtube.com/${ytMatches[0][0].split('youtube.com/')[1]}` : '';\n\n// ========== TIKTOK ==========\nconst tiktokRegex = /tiktok\\.com\\/@([a-zA-Z0-9_.]+)(?:\\/|\\?|$|\")/gi;\nconst tiktokMatches = [...html.matchAll(tiktokRegex)];\nconst tiktok = tiktokMatches[0] ? `https://tiktok.com/@${tiktokMatches[0][1]}` : '';\n\n// ========== WHATSAPP ==========\nconst waRegex = /(?:wa\\.me|api\\.whatsapp\\.com\\/send\\?phone=)\\/?([0-9]{10,15})/gi;\nconst waMatches = [...html.matchAll(waRegex)];\nconst whatsapp = waMatches[0] ? waMatches[0][1] : '';\n\nreturn {\n  ...empresa,\n  email: emailFinal || empresa.email,\n  instagram: instagram || empresa.instagram,\n  facebook: facebook || empresa.facebook,\n  linkedin: linkedin || empresa.linkedin,\n  twitter: twitter || empresa.twitter,\n  youtube: youtube || empresa.youtube,\n  tiktok: tiktok || empresa.tiktok,\n  whatsapp: whatsapp || empresa.whatsapp,\n  fonte_website: 'Site rastreado com sucesso'\n};"
+      },
+      "id": "extrair-contatos",
+      "name": "Extrair Contatos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, -100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "fonte",
+              "name": "fonte_website",
+              "value": "Sem website",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "includeOtherFields": true
+        }
+      },
+      "id": "sem-website",
+      "name": "Sem Website",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1760, 100]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-website",
+      "name": "Unir Resultados",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [2200, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Buscar LinkedIn via Google Search para empresas sem LinkedIn\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const j = item.json;\n  \n  // Se já tem LinkedIn, mantém\n  if (j.linkedin && j.linkedin.includes('linkedin.com')) {\n    results.push({ json: { ...j, linkedin_source: 'website' } });\n    continue;\n  }\n  \n  // Preparar busca no Google\n  const nomeLimpo = j.nome\n    .replace(/ltda\\.?/gi, '')\n    .replace(/s\\.?a\\.?/gi, '')\n    .replace(/eireli/gi, '')\n    .replace(/me\\.?$/gi, '')\n    .trim();\n  \n  results.push({\n    json: {\n      ...j,\n      linkedin_search_query: `site:linkedin.com/company \"${nomeLimpo}\" ${j.cidade || 'Belo Horizonte'}`,\n      linkedin_source: 'pending'\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "preparar-linkedin-search",
+      "name": "Preparar Busca LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "needs-linkedin",
+              "leftValue": "={{ $json.linkedin_source }}",
+              "rightValue": "pending",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-needs-linkedin",
+      "name": "Precisa Buscar LinkedIn?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [2640, 0]
+    },
+    {
+      "parameters": {
+        "actorId": {
+          "__rl": true,
+          "value": "nFJndFXA5zjCTuudP",
+          "mode": "list",
+          "cachedResultName": "Google Search Results Scraper (apify/google-search-scraper)"
+        },
+        "customBody": "={\n  \"queries\": \"{{ $json.linkedin_search_query }}\",\n  \"maxPagesPerQuery\": 1,\n  \"resultsPerPage\": 3,\n  \"languageCode\": \"pt-BR\",\n  \"countryCode\": \"br\",\n  \"mobileResults\": false,\n  \"saveHtml\": false\n}",
+        "authentication": "apifyOAuth2Api"
+      },
+      "id": "google-search-linkedin",
+      "name": "Buscar LinkedIn no Google",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [2860, -100],
+      "credentials": {
+        "apifyOAuth2Api": {
+          "id": "YzHm6JEHymABX1Ge",
+          "name": "Apify account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "Datasets",
+        "datasetId": "={{ $json.defaultDatasetId }}",
+        "authentication": "apifyOAuth2Api"
+      },
+      "id": "get-linkedin-results",
+      "name": "Obter Resultados Google",
+      "type": "@apify/n8n-nodes-apify.apify",
+      "typeVersion": 1,
+      "position": [3080, -100],
+      "credentials": {
+        "apifyOAuth2Api": {
+          "id": "YzHm6JEHymABX1Ge",
+          "name": "Apify account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrair URL do LinkedIn dos resultados do Google\nconst googleResults = $input.all();\nconst empresaOriginal = $('Precisa Buscar LinkedIn?').item.json;\n\nlet linkedinUrl = '';\n\nfor (const result of googleResults) {\n  const organic = result.json.organicResults || [];\n  \n  for (const item of organic) {\n    const url = item.url || '';\n    \n    // Prioridade para páginas de empresa\n    if (url.includes('linkedin.com/company/')) {\n      linkedinUrl = url.split('?')[0];\n      break;\n    }\n    if (url.includes('linkedin.com/in/') && !linkedinUrl) {\n      linkedinUrl = url.split('?')[0];\n    }\n  }\n  \n  if (linkedinUrl) break;\n}\n\nreturn {\n  ...empresaOriginal,\n  linkedin: linkedinUrl || empresaOriginal.linkedin,\n  linkedin_source: linkedinUrl ? 'google_search' : 'not_found'\n};"
+      },
+      "id": "processar-linkedin-google",
+      "name": "Processar LinkedIn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3300, -100]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "linkedin-source",
+              "name": "linkedin_source",
+              "value": "already_found",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "includeOtherFields": true
+        }
+      },
+      "id": "linkedin-ja-encontrado",
+      "name": "LinkedIn Já Encontrado",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [2860, 100]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineAll",
+        "options": {}
+      },
+      "id": "merge-linkedin",
+      "name": "Unir Todos os Dados",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3520, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Consolidar e formatar dados finais dos leads\nconst items = $input.all();\n\nconst leads = items.map(item => {\n  const j = item.json;\n  \n  // Contar redes sociais encontradas\n  const redesSociais = [\n    j.instagram, j.facebook, j.linkedin, j.twitter, j.youtube, j.tiktok\n  ].filter(r => r && r.length > 0).length;\n  \n  // Determinar qualidade do lead\n  let qualidade = 'Baixa';\n  let score = 0;\n  \n  if (j.email) score += 30;\n  if (j.telefone_limpo) score += 20;\n  if (j.linkedin) score += 25;\n  if (j.instagram) score += 10;\n  if (j.website) score += 10;\n  if (j.rating >= 4) score += 5;\n  \n  if (score >= 70) qualidade = 'Alta';\n  else if (score >= 40) qualidade = 'Média';\n  \n  return {\n    // === DADOS PRINCIPAIS ===\n    nome: j.nome,\n    categoria: j.categoria,\n    \n    // === CONTATOS ===\n    email: j.email || '',\n    telefone: j.telefone || '',\n    whatsapp: j.whatsapp || '',\n    \n    // === ENDEREÇO ===\n    endereco: j.endereco || '',\n    cidade: j.cidade || '',\n    bairro: j.bairro || '',\n    cep: j.cep || '',\n    \n    // === REDES SOCIAIS ===\n    website: j.website || '',\n    instagram: j.instagram || '',\n    facebook: j.facebook || '',\n    linkedin: j.linkedin || '',\n    twitter: j.twitter || '',\n    youtube: j.youtube || '',\n    tiktok: j.tiktok || '',\n    \n    // === MÉTRICAS ===\n    rating_google: j.rating || 0,\n    total_reviews: j.total_reviews || 0,\n    total_redes_sociais: redesSociais,\n    \n    // === QUALIFICAÇÃO ===\n    score: score,\n    qualidade: qualidade,\n    \n    // === METADADOS ===\n    google_url: j.google_url || '',\n    place_id: j.place_id || '',\n    data_coleta: new Date().toISOString().split('T')[0],\n    hora_coleta: new Date().toLocaleTimeString('pt-BR')\n  };\n});\n\n// Ordenar por score (maior primeiro)\nleads.sort((a, b) => b.score - a.score);\n\nreturn leads;"
+      },
+      "id": "consolidar-leads",
+      "name": "Consolidar Leads",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3740, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Retornar ao loop se ainda houver itens\nconst context = $('Processar em Lotes').context;\n\nif (context.noItemsLeft === false) {\n  return [{ json: { continue: true } }];\n}\n\nreturn [{ json: { continue: false } }];"
+      },
+      "id": "check-loop",
+      "name": "Verificar Loop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3960, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "continue",
+              "leftValue": "={{ $json.continue }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "should-continue",
+      "name": "Continuar Loop?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [4180, 0]
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "id": "wait-loop",
+      "name": "Aguardar 3s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [4400, -100]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "id": "agregar-todos",
+      "name": "Agregar Todos os Leads",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [4400, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gerar resumo final e lista de leads\nconst allData = $input.first().json.data || [];\n\n// Estatísticas\nconst total = allData.length;\nconst comEmail = allData.filter(l => l.email).length;\nconst comTelefone = allData.filter(l => l.telefone).length;\nconst comLinkedIn = allData.filter(l => l.linkedin).length;\nconst comInstagram = allData.filter(l => l.instagram).length;\nconst comFacebook = allData.filter(l => l.facebook).length;\nconst comTwitter = allData.filter(l => l.twitter).length;\nconst comYoutube = allData.filter(l => l.youtube).length;\nconst comTiktok = allData.filter(l => l.tiktok).length;\nconst comWhatsapp = allData.filter(l => l.whatsapp).length;\n\nconst altaQualidade = allData.filter(l => l.qualidade === 'Alta').length;\nconst mediaQualidade = allData.filter(l => l.qualidade === 'Média').length;\nconst baixaQualidade = allData.filter(l => l.qualidade === 'Baixa').length;\n\nconst resumo = {\n  resumo: {\n    total_leads: total,\n    data_coleta: new Date().toISOString(),\n    \n    por_qualidade: {\n      alta: altaQualidade,\n      media: mediaQualidade,\n      baixa: baixaQualidade\n    },\n    \n    contatos_encontrados: {\n      email: comEmail,\n      telefone: comTelefone,\n      whatsapp: comWhatsapp\n    },\n    \n    redes_sociais: {\n      linkedin: comLinkedIn,\n      instagram: comInstagram,\n      facebook: comFacebook,\n      twitter: comTwitter,\n      youtube: comYoutube,\n      tiktok: comTiktok\n    },\n    \n    taxas: {\n      taxa_email: total > 0 ? `${((comEmail/total)*100).toFixed(1)}%` : '0%',\n      taxa_linkedin: total > 0 ? `${((comLinkedIn/total)*100).toFixed(1)}%` : '0%',\n      taxa_instagram: total > 0 ? `${((comInstagram/total)*100).toFixed(1)}%` : '0%'\n    }\n  },\n  leads: allData\n};\n\nreturn resumo;"
+      },
+      "id": "gerar-resumo",
+      "name": "Gerar Resumo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4620, 100]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "output-final",
+      "name": "Lista de Leads",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [4840, 100]
+    }
+  ],
+  "connections": {
+    "Iniciar Coleta": {
+      "main": [[{"node": "Configurar Busca", "type": "main", "index": 0}]]
+    },
+    "Configurar Busca": {
+      "main": [[{"node": "Preparar Queries", "type": "main", "index": 0}]]
+    },
+    "Preparar Queries": {
+      "main": [[{"node": "Google Maps Scraper", "type": "main", "index": 0}]]
+    },
+    "Google Maps Scraper": {
+      "main": [[{"node": "Obter Resultados Maps", "type": "main", "index": 0}]]
+    },
+    "Obter Resultados Maps": {
+      "main": [[{"node": "Filtrar Empresas", "type": "main", "index": 0}]]
+    },
+    "Filtrar Empresas": {
+      "main": [[{"node": "Processar em Lotes", "type": "main", "index": 0}]]
+    },
+    "Processar em Lotes": {
+      "main": [[{"node": "Tem Website?", "type": "main", "index": 0}]]
+    },
+    "Tem Website?": {
+      "main": [
+        [{"node": "Buscar Website", "type": "main", "index": 0}],
+        [{"node": "Sem Website", "type": "main", "index": 0}]
+      ]
+    },
+    "Buscar Website": {
+      "main": [[{"node": "Extrair Contatos", "type": "main", "index": 0}]]
+    },
+    "Extrair Contatos": {
+      "main": [[{"node": "Unir Resultados", "type": "main", "index": 0}]]
+    },
+    "Sem Website": {
+      "main": [[{"node": "Unir Resultados", "type": "main", "index": 1}]]
+    },
+    "Unir Resultados": {
+      "main": [[{"node": "Preparar Busca LinkedIn", "type": "main", "index": 0}]]
+    },
+    "Preparar Busca LinkedIn": {
+      "main": [[{"node": "Precisa Buscar LinkedIn?", "type": "main", "index": 0}]]
+    },
+    "Precisa Buscar LinkedIn?": {
+      "main": [
+        [{"node": "Buscar LinkedIn no Google", "type": "main", "index": 0}],
+        [{"node": "LinkedIn Já Encontrado", "type": "main", "index": 0}]
+      ]
+    },
+    "Buscar LinkedIn no Google": {
+      "main": [[{"node": "Obter Resultados Google", "type": "main", "index": 0}]]
+    },
+    "Obter Resultados Google": {
+      "main": [[{"node": "Processar LinkedIn", "type": "main", "index": 0}]]
+    },
+    "Processar LinkedIn": {
+      "main": [[{"node": "Unir Todos os Dados", "type": "main", "index": 0}]]
+    },
+    "LinkedIn Já Encontrado": {
+      "main": [[{"node": "Unir Todos os Dados", "type": "main", "index": 1}]]
+    },
+    "Unir Todos os Dados": {
+      "main": [[{"node": "Consolidar Leads", "type": "main", "index": 0}]]
+    },
+    "Consolidar Leads": {
+      "main": [[{"node": "Verificar Loop", "type": "main", "index": 0}]]
+    },
+    "Verificar Loop": {
+      "main": [[{"node": "Continuar Loop?", "type": "main", "index": 0}]]
+    },
+    "Continuar Loop?": {
+      "main": [
+        [{"node": "Aguardar 3s", "type": "main", "index": 0}],
+        [{"node": "Agregar Todos os Leads", "type": "main", "index": 0}]
+      ]
+    },
+    "Aguardar 3s": {
+      "main": [[{"node": "Processar em Lotes", "type": "main", "index": 0}]]
+    },
+    "Agregar Todos os Leads": {
+      "main": [[{"node": "Gerar Resumo", "type": "main", "index": 0}]]
+    },
+    "Gerar Resumo": {
+      "main": [[{"node": "Lista de Leads", "type": "main", "index": 0}]]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "active": false
+}

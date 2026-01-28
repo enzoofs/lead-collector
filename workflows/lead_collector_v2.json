@@ -1,0 +1,488 @@
+{
+  "name": "TimeLabs Lead Collector v2",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Iniciar Coleta",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "cidade",
+              "value": "Belo Horizonte"
+            },
+            {
+              "name": "estado",
+              "value": "MG"
+            }
+          ],
+          "number": [
+            {
+              "name": "maxResultadosPorCategoria",
+              "value": 20
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "config",
+      "name": "Configuracoes",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [220, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Categorias de busca para TimeLabs\nconst categorias = [\n  'e-commerce',\n  'loja de roupas',\n  'clinica medica',\n  'clinica odontologica',\n  'escritorio de contabilidade',\n  'escritorio de advocacia',\n  'pet shop',\n  'academia',\n  'salao de beleza',\n  'consultorio',\n  'agencia de marketing',\n  'restaurante'\n];\n\nconst cidade = $input.first().json.cidade;\nconst maxResults = $input.first().json.maxResultadosPorCategoria;\n\n// Gerar termos de busca\nconst buscas = categorias.map(cat => ({\n  searchString: `${cat} ${cidade}`,\n  categoria: cat,\n  maxResults: maxResults\n}));\n\nreturn buscas.map(b => ({ json: b }));"
+      },
+      "id": "gerar-buscas",
+      "name": "Gerar Termos de Busca",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 300]
+    },
+    {
+      "parameters": {
+        "resource": "actor",
+        "actorId": "nwua9Gu5YrADL7ZDj",
+        "input": "={{ {\n  \"searchStringsArray\": [$json.searchString],\n  \"locationQuery\": $json.searchString,\n  \"maxCrawledPlacesPerSearch\": $json.maxResults,\n  \"language\": \"pt-BR\",\n  \"onlyDataFromSearchPage\": false,\n  \"includeWebResults\": false,\n  \"maxImages\": 0,\n  \"maxReviews\": 0,\n  \"scrapeDirectories\": false,\n  \"deeperCityScrape\": false\n} }}"
+      },
+      "id": "google-maps",
+      "name": "Google Maps Scraper",
+      "type": "n8n-nodes-base.apify",
+      "typeVersion": 1,
+      "position": [660, 300],
+      "credentials": {
+        "apifyApi": {
+          "id": "SEU_APIFY_CREDENTIAL_ID",
+          "name": "Apify API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Processar resultados do Google Maps\nconst items = $input.all();\nconst leads = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // Pular se nao tiver dados essenciais\n  if (!data.title || !data.address) continue;\n  \n  // Verificar se esta em BH\n  const endereco = (data.address || '').toLowerCase();\n  if (!endereco.includes('belo horizonte') && !endereco.includes('bh')) continue;\n  \n  // Verificar se esta aberta\n  if (data.permanentlyClosed || data.temporarilyClosed) continue;\n  \n  // Extrair bairro do endereco\n  let bairro = '';\n  const partesEndereco = (data.address || '').split(',');\n  if (partesEndereco.length >= 2) {\n    bairro = partesEndereco[1].trim();\n  }\n  \n  // Normalizar telefone\n  let telefone = data.phone || '';\n  telefone = telefone.replace(/\\D/g, '');\n  if (telefone.length === 10 || telefone.length === 11) {\n    if (!telefone.startsWith('55')) {\n      telefone = '55' + telefone;\n    }\n  }\n  \n  // Normalizar website\n  let website = data.website || '';\n  if (website && !website.startsWith('http')) {\n    website = 'https://' + website;\n  }\n  \n  // Verificar se website e rede social (nao queremos isso como site principal)\n  const redesSociais = ['facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com'];\n  const websiteERedeSocial = redesSociais.some(rs => website.toLowerCase().includes(rs));\n  \n  leads.push({\n    nome: data.title,\n    telefone: telefone,\n    endereco: data.address,\n    bairro: bairro,\n    website: websiteERedeSocial ? '' : website,\n    rating: data.totalScore || 0,\n    reviews: data.reviewsCount || 0,\n    categoria: data.categoryName || item.json.categoria || '',\n    latitude: data.location?.lat,\n    longitude: data.location?.lng,\n    googleMapsUrl: data.url,\n    placeId: data.placeId,\n    \n    // Campos para preencher depois\n    email: '',\n    instagram: '',\n    linkedin: '',\n    whatsapp: '',\n    facebook: '',\n    \n    // Metadata\n    dataColeta: new Date().toISOString()\n  });\n}\n\nreturn leads.map(l => ({ json: l }));"
+      },
+      "id": "processar-maps",
+      "name": "Processar Dados Maps",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "website-check",
+              "leftValue": "={{ $json.website }}",
+              "rightValue": "http",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "tem-website",
+      "name": "Tem Website?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.website }}",
+        "options": {
+          "timeout": 10000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 3
+            }
+          }
+        }
+      },
+      "id": "fetch-website",
+      "name": "Buscar Website",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1320, 200],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extrair contatos do HTML do website\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const lead = item.json;\n  const html = item.json.data || item.json.body || '';\n  \n  // Extrair emails\n  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}/g;\n  const emails = html.match(emailRegex) || [];\n  \n  // Filtrar emails invalidos\n  const emailsValidos = emails.filter(e => {\n    const lower = e.toLowerCase();\n    return !lower.includes('example') && \n           !lower.includes('teste') &&\n           !lower.includes('sentry') &&\n           !lower.includes('wixpress') &&\n           !lower.includes('@2x') &&\n           !lower.includes('.png') &&\n           !lower.includes('.jpg');\n  });\n  \n  // Priorizar emails corporativos\n  let emailFinal = '';\n  const emailCorporativo = emailsValidos.find(e => {\n    const lower = e.toLowerCase();\n    return lower.includes('contato') || \n           lower.includes('comercial') || \n           lower.includes('atendimento') ||\n           lower.includes('vendas');\n  });\n  emailFinal = emailCorporativo || emailsValidos[0] || '';\n  \n  // Extrair Instagram\n  const igRegex = /(?:instagram\\.com\\/|@)([a-zA-Z0-9_.]+)/gi;\n  const igMatches = html.match(igRegex) || [];\n  let instagram = '';\n  if (igMatches.length > 0) {\n    const handle = igMatches[0].replace(/instagram\\.com\\//i, '').replace('@', '');\n    if (handle && !['p', 'reel', 'stories', 'explore'].includes(handle.toLowerCase())) {\n      instagram = `https://instagram.com/${handle}`;\n    }\n  }\n  \n  // Extrair LinkedIn\n  const liRegex = /linkedin\\.com\\/(?:company|in)\\/([a-zA-Z0-9-]+)/gi;\n  const liMatches = html.match(liRegex) || [];\n  let linkedin = '';\n  if (liMatches.length > 0) {\n    linkedin = 'https://' + liMatches[0];\n  }\n  \n  // Extrair WhatsApp\n  const waRegex = /(?:wa\\.me\\/|whatsapp\\.com\\/send\\?phone=|api\\.whatsapp\\.com\\/send\\?phone=)(\\d+)/gi;\n  const waMatches = html.match(waRegex) || [];\n  let whatsapp = '';\n  if (waMatches.length > 0) {\n    const numero = waMatches[0].replace(/\\D/g, '');\n    whatsapp = numero;\n  }\n  \n  // Extrair Facebook\n  const fbRegex = /facebook\\.com\\/([a-zA-Z0-9.]+)/gi;\n  const fbMatches = html.match(fbRegex) || [];\n  let facebook = '';\n  if (fbMatches.length > 0) {\n    const pagina = fbMatches[0];\n    if (!pagina.includes('sharer') && !pagina.includes('share.php')) {\n      facebook = 'https://' + pagina;\n    }\n  }\n  \n  results.push({\n    ...lead,\n    email: emailFinal || lead.email,\n    instagram: instagram || lead.instagram,\n    linkedin: linkedin || lead.linkedin,\n    whatsapp: whatsapp || lead.whatsapp || lead.telefone,\n    facebook: facebook || lead.facebook\n  });\n}\n\nreturn results.map(r => ({ json: r }));"
+      },
+      "id": "extrair-contatos",
+      "name": "Extrair Contatos do Site",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "mergeByFields": {
+          "values": [
+            {
+              "field1": "nome",
+              "field2": "nome"
+            }
+          ]
+        },
+        "options": {
+          "clashHandling": {
+            "values": {
+              "resolveClash": "preferInput2"
+            }
+          }
+        }
+      },
+      "id": "merge-dados",
+      "name": "Merge Dados",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1760, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gerar LinkedIn URL baseado no nome da empresa\nconst items = $input.all();\nconst results = [];\n\nfunction slugify(text) {\n  return text\n    .toLowerCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '') // Remove acentos\n    .replace(/[^a-z0-9\\s-]/g, '') // Remove caracteres especiais\n    .replace(/\\s+/g, '-') // Espacos viram hifens\n    .replace(/-+/g, '-') // Remove hifens duplicados\n    .replace(/^-|-$/g, ''); // Remove hifens do inicio/fim\n}\n\nfunction limparNomeEmpresa(nome) {\n  return nome\n    .replace(/\\s*(LTDA|ME|EPP|EIRELI|S\\.?A\\.?|LTDA\\.?|\\-\\s*ME|\\-\\s*EPP)\\s*$/gi, '')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfor (const item of items) {\n  const lead = item.json;\n  \n  // Se ja tem LinkedIn, manter\n  if (lead.linkedin && lead.linkedin.includes('linkedin.com')) {\n    results.push({ json: lead });\n    continue;\n  }\n  \n  // Gerar URL padrao do LinkedIn\n  const nomeLinmpo = limparNomeEmpresa(lead.nome);\n  const slug = slugify(nomeLinmpo);\n  \n  if (slug && slug.length > 2) {\n    lead.linkedin_tentativa = `https://linkedin.com/company/${slug}`;\n  }\n  \n  results.push({ json: lead });\n}\n\nreturn results;"
+      },
+      "id": "gerar-linkedin",
+      "name": "Gerar LinkedIn URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Calcular Score do Lead\nfunction calcularScore(lead) {\n  let score = 0;\n  let motivos = [];\n\n  // DADOS BASICOS (25 pts max)\n  if (lead.telefone && lead.telefone.length >= 10) {\n    score += 10;\n    motivos.push('+10: Telefone');\n  }\n\n  if (lead.email && lead.email.includes('@') && !lead.email.includes('exemplo')) {\n    score += 10;\n    motivos.push('+10: Email');\n  }\n\n  if (lead.website && lead.website.startsWith('http')) {\n    score += 5;\n    motivos.push('+5: Website');\n  }\n\n  // PRESENCA DIGITAL (35 pts max)\n  if (lead.linkedin && lead.linkedin.includes('linkedin.com')) {\n    score += 15;\n    motivos.push('+15: LinkedIn');\n  }\n\n  if (lead.instagram && lead.instagram.includes('instagram.com')) {\n    score += 10;\n    motivos.push('+10: Instagram');\n  }\n\n  if (lead.whatsapp && lead.whatsapp.length >= 10) {\n    score += 5;\n    motivos.push('+5: WhatsApp');\n  }\n\n  const redesSociais = [\n    lead.linkedin, \n    lead.instagram, \n    lead.facebook, \n    lead.whatsapp\n  ].filter(x => x && x.length > 5).length;\n  \n  if (redesSociais >= 3) {\n    score += 5;\n    motivos.push('+5: 3+ redes');\n  }\n\n  // REPUTACAO (20 pts max)\n  const rating = parseFloat(lead.rating) || 0;\n  if (rating >= 4.5) {\n    score += 10;\n    motivos.push('+10: Rating 4.5+');\n  } else if (rating >= 4.0) {\n    score += 7;\n    motivos.push('+7: Rating 4.0+');\n  } else if (rating >= 3.5) {\n    score += 3;\n    motivos.push('+3: Rating 3.5+');\n  }\n\n  const reviews = parseInt(lead.reviews) || 0;\n  if (reviews > 50) {\n    score += 5;\n    motivos.push('+5: 50+ reviews');\n  } else if (reviews > 20) {\n    score += 3;\n    motivos.push('+3: 20+ reviews');\n  }\n\n  // SEGMENTO (20 pts max)\n  const segmentosPrioritarios = {\n    'e-commerce': 20,\n    'loja online': 20,\n    'ecommerce': 20,\n    'clinica': 15,\n    'consultorio': 15,\n    'escritorio': 15,\n    'contabilidade': 15,\n    'advocacia': 15,\n    'agencia': 10,\n    'marketing': 10\n  };\n\n  const segmento = (lead.categoria || '').toLowerCase();\n  let pontuacaoSegmento = 5;\n\n  for (const [key, pts] of Object.entries(segmentosPrioritarios)) {\n    if (segmento.includes(key)) {\n      pontuacaoSegmento = pts;\n      break;\n    }\n  }\n  score += pontuacaoSegmento;\n  motivos.push(`+${pontuacaoSegmento}: ${segmento || 'segmento geral'}`);\n\n  // PENALIDADES\n  if (!lead.telefone && !lead.email) {\n    score -= 15;\n    motivos.push('-15: Sem contato');\n  }\n\n  if (rating > 0 && rating < 3.0) {\n    score -= 10;\n    motivos.push('-10: Rating baixo');\n  }\n\n  // Garantir score entre 0-100\n  score = Math.max(0, Math.min(100, score));\n\n  // Classificacao\n  let temperatura, prioridade;\n  if (score >= 80) {\n    temperatura = 'HOT';\n    prioridade = 'Alta';\n  } else if (score >= 60) {\n    temperatura = 'WARM';\n    prioridade = 'Media';\n  } else if (score >= 40) {\n    temperatura = 'COOL';\n    prioridade = 'Baixa';\n  } else {\n    temperatura = 'COLD';\n    prioridade = 'Baixa';\n  }\n\n  return {\n    score,\n    temperatura,\n    prioridade,\n    motivos_score: motivos.join(' | ')\n  };\n}\n\n// Processar todos os leads\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const lead = item.json;\n  const scoring = calcularScore(lead);\n  \n  results.push({\n    json: {\n      // Dados principais\n      nome: lead.nome,\n      telefone: lead.telefone,\n      email: lead.email,\n      endereco: lead.endereco,\n      bairro: lead.bairro,\n      website: lead.website,\n      \n      // Redes sociais\n      instagram: lead.instagram,\n      linkedin: lead.linkedin || lead.linkedin_tentativa || '',\n      whatsapp: lead.whatsapp,\n      facebook: lead.facebook,\n      \n      // Google Maps\n      categoria: lead.categoria,\n      rating: lead.rating,\n      reviews: lead.reviews,\n      googleMapsUrl: lead.googleMapsUrl,\n      \n      // Scoring\n      score: scoring.score,\n      temperatura: scoring.temperatura,\n      prioridade: scoring.prioridade,\n      motivos_score: scoring.motivos_score,\n      \n      // Metadata\n      data_coleta: lead.dataColeta || new Date().toISOString(),\n      status_contato: 'Nao contatado'\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "calcular-score",
+      "name": "Calcular Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 300]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "baseId": "SEU_BASE_ID",
+        "tableId": "SEU_TABLE_ID",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "nome": "={{ $json.nome }}",
+            "telefone": "={{ $json.telefone }}",
+            "email": "={{ $json.email }}",
+            "endereco": "={{ $json.endereco }}",
+            "bairro": "={{ $json.bairro }}",
+            "website": "={{ $json.website }}",
+            "instagram": "={{ $json.instagram }}",
+            "linkedin": "={{ $json.linkedin }}",
+            "whatsapp": "={{ $json.whatsapp }}",
+            "facebook": "={{ $json.facebook }}",
+            "categoria": "={{ $json.categoria }}",
+            "rating": "={{ $json.rating }}",
+            "reviews": "={{ $json.reviews }}",
+            "score": "={{ $json.score }}",
+            "temperatura": "={{ $json.temperatura }}",
+            "prioridade": "={{ $json.prioridade }}",
+            "motivos_score": "={{ $json.motivos_score }}",
+            "data_coleta": "={{ $json.data_coleta }}",
+            "status_contato": "={{ $json.status_contato }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "airtable",
+      "name": "Salvar no Airtable",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.1,
+      "position": [2420, 300],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "SEU_AIRTABLE_CREDENTIAL_ID",
+          "name": "Airtable Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "hot-lead",
+              "leftValue": "={{ $json.score }}",
+              "rightValue": 75,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "is-hot",
+      "name": "E Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2640, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "enzo@timelabs.com.br",
+        "toEmail": "SEU_EMAIL@gmail.com",
+        "subject": "=Hot Lead: {{ $json.nome }} ({{ $json.score }}/100)",
+        "emailFormat": "html",
+        "html": "=<h2>Novo Hot Lead Identificado!</h2>\n<table style=\"border-collapse: collapse; width: 100%;\">\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Empresa</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.nome }}</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Score</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.score }}/100 ({{ $json.temperatura }})</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Telefone</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.telefone }}</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Email</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.email }}</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Website</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\"><a href=\"{{ $json.website }}\">{{ $json.website }}</a></td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>LinkedIn</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\"><a href=\"{{ $json.linkedin }}\">{{ $json.linkedin }}</a></td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Instagram</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\"><a href=\"{{ $json.instagram }}\">{{ $json.instagram }}</a></td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Categoria</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.categoria }}</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Rating</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.rating }} ({{ $json.reviews }} reviews)</td></tr>\n<tr><td style=\"padding: 8px; border: 1px solid #ddd;\"><strong>Motivos</strong></td><td style=\"padding: 8px; border: 1px solid #ddd;\">{{ $json.motivos_score }}</td></tr>\n</table>\n<p><a href=\"{{ $json.googleMapsUrl }}\">Ver no Google Maps</a></p>",
+        "options": {}
+      },
+      "id": "email-hot",
+      "name": "Notificar Hot Lead",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [2860, 200],
+      "credentials": {
+        "smtp": {
+          "id": "SEU_SMTP_CREDENTIAL_ID",
+          "name": "SMTP"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Estatisticas da execucao\nconst items = $input.all();\n\nconst stats = {\n  total: items.length,\n  hot: 0,\n  warm: 0,\n  cool: 0,\n  cold: 0,\n  comEmail: 0,\n  comTelefone: 0,\n  comLinkedIn: 0,\n  comInstagram: 0,\n  comWebsite: 0,\n  mediaScore: 0,\n  mediaRating: 0,\n  porCategoria: {}\n};\n\nlet somaScore = 0;\nlet somaRating = 0;\n\nfor (const item of items) {\n  const lead = item.json;\n  \n  // Temperatura\n  if (lead.temperatura === 'HOT') stats.hot++;\n  else if (lead.temperatura === 'WARM') stats.warm++;\n  else if (lead.temperatura === 'COOL') stats.cool++;\n  else stats.cold++;\n  \n  // Contatos\n  if (lead.email) stats.comEmail++;\n  if (lead.telefone) stats.comTelefone++;\n  if (lead.linkedin) stats.comLinkedIn++;\n  if (lead.instagram) stats.comInstagram++;\n  if (lead.website) stats.comWebsite++;\n  \n  // Medias\n  somaScore += lead.score || 0;\n  somaRating += parseFloat(lead.rating) || 0;\n  \n  // Por categoria\n  const cat = lead.categoria || 'Outros';\n  stats.porCategoria[cat] = (stats.porCategoria[cat] || 0) + 1;\n}\n\nstats.mediaScore = items.length > 0 ? Math.round(somaScore / items.length) : 0;\nstats.mediaRating = items.length > 0 ? (somaRating / items.length).toFixed(1) : 0;\nstats.timestamp = new Date().toISOString();\n\nreturn [{ json: stats }];"
+      },
+      "id": "estatisticas",
+      "name": "Estatisticas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2860, 400]
+    },
+    {
+      "parameters": {},
+      "id": "noop",
+      "name": "Sem Website",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1320, 400]
+    }
+  ],
+  "connections": {
+    "Iniciar Coleta": {
+      "main": [
+        [
+          {
+            "node": "Configuracoes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configuracoes": {
+      "main": [
+        [
+          {
+            "node": "Gerar Termos de Busca",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gerar Termos de Busca": {
+      "main": [
+        [
+          {
+            "node": "Google Maps Scraper",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Maps Scraper": {
+      "main": [
+        [
+          {
+            "node": "Processar Dados Maps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Processar Dados Maps": {
+      "main": [
+        [
+          {
+            "node": "Tem Website?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem Website?": {
+      "main": [
+        [
+          {
+            "node": "Buscar Website",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Sem Website",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar Website": {
+      "main": [
+        [
+          {
+            "node": "Extrair Contatos do Site",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair Contatos do Site": {
+      "main": [
+        [
+          {
+            "node": "Merge Dados",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sem Website": {
+      "main": [
+        [
+          {
+            "node": "Merge Dados",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Dados": {
+      "main": [
+        [
+          {
+            "node": "Gerar LinkedIn URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gerar LinkedIn URL": {
+      "main": [
+        [
+          {
+            "node": "Calcular Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular Score": {
+      "main": [
+        [
+          {
+            "node": "Salvar no Airtable",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Salvar no Airtable": {
+      "main": [
+        [
+          {
+            "node": "E Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Notificar Hot Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Estatisticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notificar Hot Lead": {
+      "main": [
+        [
+          {
+            "node": "Estatisticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "Lead Collection",
+      "createdAt": "2026-01-28T00:00:00.000Z",
+      "updatedAt": "2026-01-28T00:00:00.000Z"
+    }
+  ],
+  "pinData": {}
+}
